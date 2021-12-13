@@ -18,12 +18,22 @@ const NOT_VALID_YET = 'NOT_VALID_YET';
 const VALID = 'VALID';
 const PARTIALLY_VALID = 'PARTIALLY_VALID'; // only in Italy
 
+// Validation mode
+
+const SUPER_DGP = '2G';
+const NORMAL_DGP = '3G';
+
 const codes = {
   VALID,
   PARTIALLY_VALID,
   NOT_VALID,
   NOT_VALID_YET,
   NOT_EU_DCC,
+};
+
+const modalities = {
+  SUPER_DGP,
+  NORMAL_DGP,
 };
 
 const findProperty = (rules, name, type) => rules.find((element) => {
@@ -254,17 +264,16 @@ const checkRecovery = (certificate, rules) => {
     const last = certificate.recoveryStatements[certificate.recoveryStatements.length - 1];
 
     const now = new Date(Date.now());
-    let startDate = new Date(
+    const startDate = new Date(
       Date.parse(clearExtraTime(last.certificateValidFrom)),
     );
-    let endDate = new Date(
+    const endDate = new Date(
       Date.parse(clearExtraTime(last.certificateValidUntil)),
     );
 
-    startDate = addDays(startDate, recoveryCertStartDay.value);
-    endDate = addDays(endDate, recoveryCertEndDay.value);
+    const startDateValidation = addDays(startDate, recoveryCertStartDay.value);
 
-    if (startDate > now) {
+    if (startDateValidation > now) {
       return {
         code: NOT_VALID_YET,
         message:
@@ -273,10 +282,17 @@ const checkRecovery = (certificate, rules) => {
       };
     }
 
-    if (now > endDate) {
+    if (now > addDays(startDateValidation, recoveryCertEndDay.value)) {
       return {
         code: NOT_VALID,
         message: `Recovery statement is expired at : ${endDate.toISOString()}`,
+      };
+    }
+
+    if (now > endDate) {
+      return {
+        code: PARTIALLY_VALID,
+        message: `Recovery statement is partially valid. It will be expired at : ${endDate.toISOString()}`,
       };
     }
 
@@ -308,7 +324,7 @@ const checkUVCI = (r, UVCIList) => {
   return true;
 };
 
-const checkRules = (certificate) => {
+const checkRules = (certificate, mode = NORMAL_DGP) => {
   const rules = cache.getRules();
   const UVCIList = findProperty(
     rules,
@@ -323,6 +339,13 @@ const checkRules = (certificate) => {
   }
 
   if (certificate.tests && checkUVCI(certificate.tests, UVCIList)) {
+    if (mode === SUPER_DGP) {
+      return {
+        result: false,
+        code: NOT_VALID,
+        message: 'Not valid. Super DGP required.',
+      };
+    }
     result = checkTests(certificate, rules);
   }
 
@@ -376,12 +399,12 @@ const buildResponse = (certificate, rulesResult, signatureOk) => {
   };
 };
 
-async function validate(certificate) {
-  const rulesResult = checkRules(certificate);
+async function validate(certificate, mode = NORMAL_DGP) {
+  const rulesResult = checkRules(certificate, mode);
   const signatureOk = await checkSignature(certificate);
   return buildResponse(certificate, rulesResult, signatureOk);
 }
 
 module.exports = {
-  checkSignature, checkRules, validate, codes,
+  checkSignature, checkRules, validate, codes, mode: modalities,
 };
