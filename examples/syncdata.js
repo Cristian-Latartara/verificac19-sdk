@@ -7,6 +7,9 @@ const main = async () => {
 main();
 
 // Alternatively you can use
-// await Service.updateRules();
-// await Service.updateSignaturesList();
-// await Service.updateSignatures();
+// await setUp();
+// await updateRules();
+// await updateSignaturesList();
+// await updateSignatures();
+// await updateCRL();
+// await tearDown();

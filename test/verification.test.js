@@ -2,12 +2,14 @@ const path = require('path');
 const chai = require('chai');
 const mockdate = require('mockdate');
 const { Certificate, Validator } = require('../src');
+const cache = require('../src/cache');
 
+const oldIsReady = cache.isReady;
 chai.use(require('chai-as-promised'));
 chai.use(require('chai-match'));
 
-const verifyRulesFromCertificate = (dcc, expectedResult, expectedCode, expectedMessageReg = null, mode = Validator.mode.NORMAL_DGP) => {
-  const rulesReport = Validator.checkRules(dcc, mode);
+const verifyRulesFromCertificate = async (dcc, expectedResult, expectedCode, expectedMessageReg = null, mode = Validator.mode.NORMAL_DGP) => {
+  const rulesReport = await Validator.checkRules(dcc, mode);
   chai.expect(rulesReport.result).to.be.equal(expectedResult);
   chai.expect(rulesReport.code).to.be.equal(expectedCode);
   if (expectedMessageReg) {
@@ -22,7 +24,7 @@ const verifyRulesFromImage = async (imagePath, expectedResult, expectedCode, exp
 
 const verifyRulesAndSignature = async (imagePath, expectedRules, expectedSignature, mode = Validator.mode.NORMAL_DGP) => {
   const dcc = await Certificate.fromImage(imagePath);
-  const areRulesOk = Validator.checkRules(dcc, mode).result;
+  const areRulesOk = (await Validator.checkRules(dcc, mode)).result;
   chai.expect(areRulesOk).to.be.equal(expectedRules);
   const isSignatureVerified = await Validator.checkSignature(dcc);
   chai.expect(isSignatureVerified).to.be.equal(expectedSignature);
@@ -37,6 +39,12 @@ const verifyRulesAndSignatureWithVerify = async (imagePath, expectedRules, expec
 };
 
 describe('Testing integration between Certificate and Validator', () => {
+  beforeEach(() => {
+    cache.isReady = () => true;
+  });
+  afterEach(() => {
+    cache.isReady = oldIsReady;
+  });
   it('makes rules verification with individual methods', async () => {
     await verifyRulesAndSignature(path.join('test', 'data', 'shit.png'), false, true);
     await verifyRulesAndSignature(path.join('test', 'data', '2.png'), false, false);
@@ -98,6 +106,55 @@ describe('Testing integration between Certificate and Validator', () => {
     );
   });
 
+  it('makes rules verification on booster cases and recovery bis', async () => {
+    // Vaccine not completed not valid in booster mode
+    mockdate.set('2021-06-24T00:00:00.000Z');
+    await verifyRulesFromImage(
+      path.join('test', 'data', 'eu_test_certificates', 'SK_1.png'), false,
+      Validator.codes.NOT_VALID,
+      '^Vaccine is not valid in Booster mode$',
+      Validator.mode.BOOSTER_DGP,
+    );
+    mockdate.reset();
+    // Vaccine completed not valid in booster mode (test needed)
+    await verifyRulesFromImage(
+      path.join('test', 'data', 'eu_test_certificates', 'SK_3.png'), false,
+      Validator.codes.TEST_NEEDED,
+      '^Test needed$',
+      Validator.mode.BOOSTER_DGP,
+    );
+    // Test not valid in booster mode
+    mockdate.set('2021-05-22T12:34:56.000Z');
+    await verifyRulesFromImage(
+      path.join('test', 'data', 'eu_test_certificates', 'SK_7.png'), false,
+      Validator.codes.NOT_VALID,
+      '^Not valid. Super DGP or Booster required.$',
+      Validator.mode.BOOSTER_DGP,
+    );
+    mockdate.reset();
+    // Recovery statement not valid in booster mode (test needed)
+    mockdate.set('2021-10-20T00:00:00.000Z');
+    await verifyRulesFromImage(
+      path.join('test', 'data', 'eu_test_certificates', 'SK_6.png'), false,
+      Validator.codes.TEST_NEEDED,
+      '^Test needed$',
+      Validator.mode.BOOSTER_DGP,
+    );
+    mockdate.reset();
+    // Recovery statement is valid
+    mockdate.set('2021-10-20T00:00:00.000Z');
+    const dccFakeRecovery = await Certificate.fromImage(
+      path.join('test', 'data', 'eu_test_certificates', 'SK_6.png'),
+    );
+    dccFakeRecovery.kid = 'jnFYIu1y3ic=';
+    await verifyRulesFromCertificate(
+      dccFakeRecovery, true,
+      Validator.codes.VALID,
+      '^Recovery statement is valid .*$',
+    );
+    mockdate.reset();
+  });
+
   it('makes rules verification on special cases', async () => {
     // Valid test results
     mockdate.set('2021-05-22T12:34:56.000Z');
@@ -115,14 +172,14 @@ describe('Testing integration between Certificate and Validator', () => {
     await verifyRulesFromImage(
       path.join('test', 'data', 'eu_test_certificates', 'SK_8.png'), false,
       Validator.codes.NOT_VALID,
-      '^Not valid. Super DGP required.$',
+      '^Not valid. Super DGP or Booster required.$',
       Validator.mode.SUPER_DGP,
     );
     // Doses 1/2 valid only in Italy
     mockdate.set('2021-06-24T00:00:00.000Z');
     await verifyRulesFromImage(
       path.join('test', 'data', 'eu_test_certificates', 'SK_1.png'), true,
-      Validator.codes.PARTIALLY_VALID,
+      Validator.codes.VALID,
       '^Doses 1/2 - Vaccination is valid .*$',
     );
     // Test result not valid yet
@@ -179,7 +236,7 @@ describe('Testing integration between Certificate and Validator', () => {
       path.join('test', 'data', 'eu_test_certificates', 'SK_6.png'),
     );
     dccWithoutRecovery.recoveryStatements = [];
-    verifyRulesFromCertificate(
+    await verifyRulesFromCertificate(
       dccWithoutRecovery, false, Validator.codes.NOT_EU_DCC,
     );
     // Not valid greenpass without tests
@@ -187,7 +244,7 @@ describe('Testing integration between Certificate and Validator', () => {
       path.join('test', 'data', 'eu_test_certificates', 'SK_7.png'),
     );
     dccWithoutTests.tests = [];
-    verifyRulesFromCertificate(
+    await verifyRulesFromCertificate(
       dccWithoutTests, false, Validator.codes.NOT_EU_DCC,
     );
     // Not valid greenpass without vaccinations
@@ -195,7 +252,7 @@ describe('Testing integration between Certificate and Validator', () => {
       path.join('test', 'data', 'eu_test_certificates', 'SK_3.png'),
     );
     dccWithoutVaccinations.vaccinations = [];
-    verifyRulesFromCertificate(
+    await verifyRulesFromCertificate(
       dccWithoutVaccinations, false, Validator.codes.NOT_EU_DCC,
     );
     // Negative vaccination
@@ -203,7 +260,7 @@ describe('Testing integration between Certificate and Validator', () => {
       path.join('test', 'data', 'eu_test_certificates', 'SK_3.png'),
     );
     dccWithNegativeVaccinations.vaccinations[1].doseNumber = -1;
-    verifyRulesFromCertificate(
+    await verifyRulesFromCertificate(
       dccWithNegativeVaccinations, false, Validator.codes.NOT_VALID,
     );
     // Malformed vaccination
@@ -211,7 +268,7 @@ describe('Testing integration between Certificate and Validator', () => {
       path.join('test', 'data', 'eu_test_certificates', 'SK_3.png'),
     );
     dccWithMalformedVaccinations.vaccinations[1].doseNumber = 'a';
-    verifyRulesFromCertificate(
+    await verifyRulesFromCertificate(
       dccWithMalformedVaccinations, false, Validator.codes.NOT_VALID,
     );
     mockdate.reset();
@@ -219,7 +276,7 @@ describe('Testing integration between Certificate and Validator', () => {
     const dccSMSputnikVaccinations = await Certificate.fromImage(
       path.join('test', 'data', 'eu_test_certificates', 'SM_1.png'),
     );
-    verifyRulesFromCertificate(
+    await verifyRulesFromCertificate(
       dccSMSputnikVaccinations, true, Validator.codes.VALID,
     );
     // Other countries vaccination with Sputnik-V
@@ -227,8 +284,32 @@ describe('Testing integration between Certificate and Validator', () => {
       path.join('test', 'data', 'eu_test_certificates', 'SM_1.png'),
     );
     dccITSputnikVaccinations.vaccinations[0].countryOfVaccination = 'IT';
-    verifyRulesFromCertificate(
+    await verifyRulesFromCertificate(
       dccITSputnikVaccinations, false, Validator.codes.NOT_VALID,
+    );
+    // Test fake tests
+    const dccWithFakeTest = await Certificate.fromImage(
+      path.join('test', 'data', 'eu_test_certificates', 'SK_8.png'),
+    );
+    dccWithFakeTest.tests[0].typeOfTest = 'Fake';
+    await verifyRulesFromCertificate(
+      dccWithFakeTest, false, Validator.codes.NOT_VALID,
+      '^Test type is not valid$',
+    );
+    // Test fake vaccinations
+    const dccFakeVaccination = await Certificate.fromImage(
+      path.join('test', 'data', 'eu_test_certificates', 'SM_1.png'),
+    );
+    dccFakeVaccination.vaccinations[0].medicinalProduct = 'Fake';
+    await verifyRulesFromCertificate(
+      dccFakeVaccination, false, Validator.codes.NOT_VALID,
+      '^Vaccine Type is not in list$',
+    );
+    // Not EU DGC
+    delete dccFakeVaccination.vaccinations;
+    await verifyRulesFromCertificate(
+      dccFakeVaccination, false, Validator.codes.NOT_EU_DCC,
+      '^No vaccination, test or recovery statement found in payload$',
     );
   });
 });

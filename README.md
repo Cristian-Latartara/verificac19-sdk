@@ -11,6 +11,10 @@ Official VerificaC19 SDK implementation for Node.js ([official SDKs list](https:
 ## Requirements
 
 - Node.js version >= 12.x
+- MongoDB version >= 5.x (used to store CRL)
+
+⚠️ If you don't want to use MongoDB to store CRL, 
+read [how to write your own CRL management system](https://github.com/italia/verificac19-sdk/blob/master/docs/en/CUSTOM_CRL.md).
 
 ## Installation
 
@@ -20,9 +24,19 @@ npm i verificac19-sdk
 
 ## Usage
 
-### Download and cache rules and DSCs
+### Setup CRL environment
 
-You can download and cache rules and DSCs using `Service` module.
+CRL data will be stored in a MongoDB database. This repository provides a simple 
+`docker-compose.yml` file (dev instance) with a replica set. By default the
+connection string is `mongodb://root:example@localhost:27017/VC19?authSource=admin`,
+if you want to change it, set `VC19_MONGODB_URL` env variable.
+
+⚠️ If you don't want to use MongoDB to store CRL, 
+read [how to write your own CRL management system](https://github.com/italia/verificac19-sdk/blob/master/docs/en/CUSTOM_CRL.md).
+
+### Download and cache rules, CRL data and DSCs
+
+You can download and cache rules, CRL data and DSCs using `Service` module.
 
 ```js
 const {Service} = require('verificac19-sdk');
@@ -33,7 +47,7 @@ const main = async () => {
 ```
 
 ⚠️ By default rules and DSCs will be cached in a folder called `.cache`, 
-to change it please set `VC19_CACHE_FOLDER` env variable.
+to change it, set `VC19_CACHE_FOLDER` env variable.
 
 👉🏻  See an example [examples/syncdata.js](https://github.com/italia/verificac19-sdk/blob/master/examples/syncdata.js).
 
@@ -69,6 +83,8 @@ Loaded DCC has the following structure:
 }
 ```
 
+👉🏻 `fromImage` and `fromRaw` methods may rise `CertificateParsingError`.
+
 You can verify a DCC using `Validator` module.
 
 ```js
@@ -95,13 +111,14 @@ const main = async () => {
 
 you can compare the resulting `code` with `Validator.codes` values
 
-| | Code            | Description                              |
-|-| --------------- | ---------------------------------------- |
-|✅| VALID           | Certificate is valid in Italy and Europe |
-|✅| PARTIALLY_VALID | Certificate is valid only in Italy       | 
-|❌| NOT_VALID       | Certificate is not valid                 | 
-|❌| NOT_VALID_YET   | Certificate is not valid yet             | 
-|❌| NOT_EU_DCC      | Certificate is not an EU DCC             | 
+| | Code            | Description                              | Result |
+|-| --------------- | ---------------------------------------- | ------ |
+|✅| VALID           | Certificate is valid                     | `true` |
+|⚠️| TEST_NEEDED     | Test needed if verification mode is BOOSTER_DGP | `false` |
+|❌| NOT_VALID       | Certificate is not valid                 | `false` |
+|❌| NOT_VALID_YET   | Certificate is not valid yet             | `false` |
+|❌| REVOKED   | Certificate is revoked           | `false` |
+|❌| NOT_EU_DCC      | Certificate is not an EU DCC             | `false` |
 
 for example 
 
@@ -110,8 +127,10 @@ const validationResult = await Validator.validate(dccTest);
 console.log(validationResult.code === Validator.codes.NOT_VALID);
 ```
 
-👉🏻  See an example [examples/verifydccs.js](https://github.com/italia/verificac19-sdk/blob/master/examples/verifydccs.js).
+👉🏻 `validate` method may rise `CertificateVerificationError` (e.g. when cache is
+not ready yet).
 
+👉🏻  See an example [examples/verifydccs.js](https://github.com/italia/verificac19-sdk/blob/master/examples/verifydccs.js).
 
 ### Verification mode
 
@@ -127,11 +146,20 @@ const result = await Validator.validate(dcc, Validator.mode.SUPER_DGP);
 | -------------- | ---------------------------------------- |
 | NORMAL_DGP     | Normal verification (default value)      |
 | SUPER_DGP      | Super Green Pass verification            | 
+| BOOSTER_DGP    | Booster verification mode                | 
 
-***Super Green Pass, which will come into force from 6 December to 15 January 2021, 
-will be a certificate valid only for people who have been vaccinated against 
-or who have recovered from Covid19, and will prevent all the others from 
-entering bars, restaurants, cinemas, gyms, theatres, discos and stadiums.***
+Details
+
+- `SUPER_DGP Mode`: VerificaC19 SDK considers a green certificate valid only for
+people who have been vaccinated against or who have recovered from Covid19, 
+and will prevent all the others from 
+entering bars, restaurants, cinemas, gyms, theatres, discos and stadiums.
+
+- `BOOSTER_DGP Mode`: VerificaC19 SDK considers green certificates generated after a 
+booster dose to be valid. Furthermore, green certificates generated after the 
+first vaccination cycle or recovery with the simultaneous presentation of a 
+digital document certifying the negative result of a SARS-CoV-2 test 
+are considered valid.
 
 ### Alternative methods
 
@@ -142,9 +170,12 @@ To update rules and DSCs you can also use `updateRules`,
 const {Service} = require('verificac19-sdk');
 
 const main = async () => {
+  await Service.setUp();
   await Service.updateRules();
   await Service.updateSignaturesList();
   await Service.updateSignatures();
+  await Service.updateCRL();
+  await Service.tearDown();
 }
 ```
 
@@ -156,20 +187,28 @@ const {Certificate, Validator} = require('verificac19-sdk');
 
 const main = async () => {
   const myDCC = await Certificate.fromImage('./data/myDCC.png');
-  const rulesOk = Validator.checkRules(myDCC).result;
+  const rulesOk = await Validator.checkRules(myDCC).result;
   const signatureOk = await Validator.checkSignature(myDCC);
 }
 ```
 
 ## Development
 
-Install dependencies
+### Install dependencies
 
 ```sh
 npm i
 ```
 
-Run tests
+### Run tests
+
+Run mongodb services using Docker
+
+```sh
+docker-compose up
+```
+
+Set `VC19_CACHE_FOLDER` and run tests
 
 ```sh
 npm run test

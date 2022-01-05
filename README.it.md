@@ -9,6 +9,10 @@ Implementazione ufficiale per Node.js di VerificaC19 SDK ([lista degli SDK uffic
 ## Requisiti
 
 - Node.js versione >= 12.x
+- MongoDB versione >= 5.x (usato per memorizzare la CRL)
+
+⚠️ Se non vuoi usare MongoDB per la CRL, 
+leggi [come scrivere il proprio sistema di gestione CRL](https://github.com/italia/verificac19-sdk/blob/master/docs/it/CUSTOM_CRL.md).
 
 ## Installazione
 
@@ -18,7 +22,18 @@ npm i verificac19-sdk
 
 ## Utilizzo
 
-### Scarica e salva regole e DSC
+### Setup CRL environment
+
+La CRL viene memorizzata su un database MongoDB. Questo repository fornisce un 
+file `docker-compose.yml` (come istanza di sviluppo) con un replica set.
+Di default la stringa di connessione è
+`mongodb://root:example@localhost:27017/VC19?authSource=admin`, ed è possibile 
+cambiarla settando la variabile di ambiente `VC19_MONGODB_URL`.
+
+⚠️ Se non vuoi utilizzare MongoDB per gestire la CRL, 
+leggi [come scrivere il proprio sistema di gestione CRL](https://github.com/italia/verificac19-sdk/blob/master/docs/it/CUSTOM_CRL.md).
+
+### Scarica e salva regole, CRL e DSC
 
 Puoi scaricare e salvare regole e DSC utilizzando il modulo `Service`.
 
@@ -67,6 +82,9 @@ Il contenuto del DCC caricato sarà il seguente:
 }
 ```
 
+👉🏻 I metodi `fromImage` e `fromRaw` potrebbero sollevare l'eccezione 
+`CertificateParsingError`.
+
 Puoi verificare un DCC utilizzando il modulo `Validator`.
 
 ```js
@@ -93,13 +111,14 @@ const main = async () => {
 
 Puoi comparare `code` con i valori di `Validator.codes` riportati nella tabella
 
-| | Code            | Description                                   |
-|-| --------------- | --------------------------------------------- |
-|✅| VALID           | Il certificato è valido in Italia e in Europa |
-|✅| PARTIALLY_VALID | Il certificato è valido solo in Italia        | 
-|❌| NOT_VALID       | Il certificato non è valido                   | 
-|❌| NOT_VALID_YET   | Il certificato non è ancora valido            | 
-|❌| NOT_EU_DCC      | Il certificato non è un EU DCC                | 
+| | Codice          | Descrizione                                   | Risultato |
+|-| --------------- | --------------------------------------------- | --------- |
+|✅| VALID           | Il certificato è valido                       | `true` |
+|⚠️| TEST_NEEDED     | In modalità BOOSTER_DGP si necessita di test  | `false` |
+|❌| NOT_VALID       | Il certificato non è valido                   | `false` |
+|❌| NOT_VALID_YET   | Il certificato non è ancora valido            | `false` | 
+|❌| REVOKED         | Il certificato è stato revocato               | `false` |
+|❌| NOT_EU_DCC      | Il certificato non è un EU DCC                | `false` |
 
 per esempio 
 
@@ -107,6 +126,9 @@ per esempio
 const validationResult = await Validator.validate(dccTest);
 console.log(validationResult.code === Validator.codes.NOT_VALID);
 ```
+
+👉🏻 `validate` potrebbe sollevare l'eccezione `CertificateVerificationError` (ad
+esempio quando la cache non è ancora pronta).
 
 👉🏻  Vedi l'esempio [examples/verifydccs.js](https://github.com/italia/verificac19-sdk/blob/master/examples/verifydccs.js).
 
@@ -124,11 +146,19 @@ const result = await Validator.validate(dcc, Validator.mode.SUPER_DGP);
 | -------------- | ---------------------------------------- |
 | NORMAL_DGP     | Verifica normale (valore di default)     |
 | SUPER_DGP      | Verifica Super Green Pass                | 
+| BOOSTER_DGP    | Verifica modalità Booster                | 
 
-***Il Super Green Pass, che entrerà in vigore dal 6 dicembre al 15 gennaio 2021,
-sarà un certificato valido solo per le persone che sono state vaccinate 
-o che sono guarite dal Covid19, e impedirà a tutti gli altri di entrare nei bar,
-ristoranti, cinema, palestre, teatri, discoteche e stadi.***
+- `Modalità SUPER_DGP`: VerificaC19 SDK considera un certificato valido solo per 
+le persone che sono state vaccinate o che sono guarite dal Covid19, 
+e impedirà a tutti gli altri di entrare nei bar,
+ristoranti, cinema, palestre, teatri, discoteche e stadi.
+
+- `Modalità BOOSTER_DGP`: VerificaC19 SDK considera valide le certificazioni 
+verdi generate dopo la dose booster di richiamo vaccinale. Considera valide, inoltre, 
+le certificazioni verdi generate dopo ciclo vaccinale primario o guarigione con 
+la contestuale presentazione di un documento, cartaceo o digitale, che attesti 
+l’esito negativo di un test al SARS-CoV-2.
+
 
 ### Metodi alternativi
 
@@ -139,9 +169,12 @@ Per scaricare e salvare le regole e le DSC puoi anche usare i metodi
 const {Service} = require('verificac19-sdk');
 
 const main = async () => {
+  await Service.setUp();
   await Service.updateRules();
   await Service.updateSignaturesList();
   await Service.updateSignatures();
+  await Service.updateCRL();
+  await Service.tearDown();
 }
 ```
 
@@ -153,7 +186,7 @@ const {Certificate, Validator} = require('verificac19-sdk');
 
 const main = async () => {
   const myDCC = await Certificate.fromImage('./data/myDCC.png');
-  const rulesOk = Validator.checkRules(myDCC).result;
+  const rulesOk = await Validator.checkRules(myDCC).result;
   const signatureOk = await Validator.checkSignature(myDCC);
 }
 ```
